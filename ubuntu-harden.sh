@@ -9,9 +9,9 @@ LOG_FILE=${LOG_FILE:-"$LOG_DIR/harden-$(date +%s).log"}
 SSHD_CONFIG_FILE="/etc/ssh/sshd_config"
 SSH_PORT=1911
 BACKUP_DIR=$TMP_DIR/backup
-
 # Default verbosity
 VERBOSITY_LEVEL=1
+YES=false
 
 # Parse command line arguments
 for arg in "$@"; do
@@ -32,10 +32,13 @@ for arg in "$@"; do
     NO_GUI=1
     shift
     ;;
+  --yes)
+    YES=true
+    shift
+    ;;
   *) ;;
   esac
 done
-
 # Check if whiptail is available
 if ! command -v whiptail &>/dev/null && [[ -z "$NO_GUI" ]]; then
   echo "Installing whiptail for better user interface..."
@@ -56,19 +59,21 @@ log() {
 }
 
 show_message() {
-  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+  if ! $YES && [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
     whiptail --title "Ubuntu Hardening Script" --msgbox "$1" $HEIGHT $WIDTH
   else
     echo "$1"
-    read -p "Press Enter to continue..."
+    if ! $YES; then
+      read -p "Press Enter to continue..."
+    fi
   fi
 }
 
 show_info() {
-  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+  if ! $YES && [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
     whiptail --title "Information" --msgbox "$1" $HEIGHT $WIDTH
   else
-    echo "INFO: $1"
+    log 0 $1
   fi
 }
 
@@ -245,21 +250,26 @@ setup_admin_user() {
   touch "$ssh_dir/authorized_keys"
   sudo chmod 600 "$ssh_dir/authorized_keys"
   sudo chown -R "$ADMIN_USER:$ADMIN_USER" "/home/$ADMIN_USER"
-  add_pub_key=$(get_yes_no "Do you want to add public key for new admin user?")
-  if [[ "$add_pub_key" == "yes" ]]; then
-    local PUBKEY=$(get_input "Enter public SSH key for new admin user:" "")
-    echo $PUBKEY | tee -a $ssh_dir/authorized_keys
+  if ! $YES; then
+    add_pub_key=$(get_yes_no "Do you want to add public key for new admin user?")
+    if [[ "$add_pub_key" == "yes" ]]; then
+      local PUBKEY=$(get_input "Enter public SSH key for new admin user:" "")
+      echo $PUBKEY | tee -a $ssh_dir/authorized_keys
+    else
+      show_info "Admin user created successfully. Remember to add your SSH key to $ssh_dir/authorized_keys"
+    fi
+    change_passwd_now=$(get_yes_no "Do you want to change password for $ADMIN_USER")
+    if [[ "$change_passwd_now" == "yes" ]]; then
+      local PASSWD=$(get_input "Password:" "")
+      change_passwd $ADMIN_USER $PASSWD
+    else
+      show_info "Do not forget to change password of $ADMIN_USER, otherwise you won't acces sudo permissions anymore!"
+    fi
   else
     show_info "Admin user created successfully. Remember to add your SSH key to $ssh_dir/authorized_keys"
-  fi
-
-  change_passwd_now=$(get_yes_no "Do you want to change password for $ADMIN_USER")
-  if [[ "$change_passwd_now" == "yes" ]]; then
-    local PASSWD=$(get_input "Password:" "")
-    change_passwd $ADMIN_USER $PASSWD
-  else
     show_info "Do not forget to change password of $ADMIN_USER, otherwise you won't acces sudo permissions anymore!"
   fi
+
 }
 
 backup_file() {
@@ -326,12 +336,18 @@ restart_ssh() {
 
 configure_ssh() {
   show_info "Configuring SSH security settings..."
-
   # Get SSH port
-  SSH_PORT=$(get_input "Enter SSH port (default: 1911):" "1911")
+  if ! $YES; then
+    SSH_PORT=$(get_input "Enter SSH port (default: 1911):" "$SSH_PORT")
+  fi
 
   # Ask about password authentication
-  password_setting=$(get_yes_no "Allow password authentication? (Recommended: No if you have SSH keys)")
+  if ! $YES; then
+    password_setting=$(get_yes_no "Allow password authentication? (Recommended: No if you have SSH keys)")
+  else
+    password_setting="no"
+  fi
+
   backup_file $SSHD_CONFIG_FILE
 
   sed_ssh_param "PubkeyAuthentication" "yes" $SSHD_CONFIG_FILE
@@ -375,7 +391,10 @@ set_fw_rules() {
   ufw allow 68/udp comment 'DHCP client'
 
   # Ask about additional ports
-  add_ports=$(get_yes_no "Do you want to open additional ports? (e.g., web server ports)")
+  if ! $YES; then
+    add_ports=$(get_yes_no "Do you want to open additional ports? (e.g., web server ports)")
+  fi
+
   if [[ "$add_ports" == "yes" ]]; then
     additional_ports=$(get_input "Enter additional ports to open (comma-separated, e.g., 80,443):" "")
     if [[ -n "$additional_ports" ]]; then
@@ -482,23 +501,27 @@ configure_and_start_clamav() {
   show_info "Configuring ClamAV antivirus..."
 
   # Get scan frequency
-  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
-    scan_frequency=$(whiptail --title "ClamAV Configuration" --menu "How often should ClamAV scan your system?" $HEIGHT $WIDTH $CHOICE_HEIGHT \
-      "daily" "Scan every day (high security)" \
-      "weekly" "Scan weekly (recommended)" \
-      "monthly" "Scan monthly (basic)" 3>&1 1>&2 2>&3)
+  if ! $YES; then
+    if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+      scan_frequency=$(whiptail --title "ClamAV Configuration" --menu "How often should ClamAV scan your system?" $HEIGHT $WIDTH $CHOICE_HEIGHT \
+        "daily" "Scan every day (high security)" \
+        "weekly" "Scan weekly (recommended)" \
+        "monthly" "Scan monthly (basic)" 3>&1 1>&2 2>&3)
+    else
+      echo "Select scan frequency:"
+      echo "1. Daily (high security)"
+      echo "2. Weekly (recommended)"
+      echo "3. Monthly (basic)"
+      read -p "Enter choice (1-3): " freq_choice
+      case $freq_choice in
+      1) scan_frequency="daily" ;;
+      2) scan_frequency="weekly" ;;
+      3) scan_frequency="monthly" ;;
+      *) scan_frequency="weekly" ;;
+      esac
+    fi
   else
-    echo "Select scan frequency:"
-    echo "1. Daily (high security)"
-    echo "2. Weekly (recommended)"
-    echo "3. Monthly (basic)"
-    read -p "Enter choice (1-3): " freq_choice
-    case $freq_choice in
-    1) scan_frequency="daily" ;;
-    2) scan_frequency="weekly" ;;
-    3) scan_frequency="monthly" ;;
-    *) scan_frequency="weekly" ;;
-    esac
+    scan_frequency="weekly"
   fi
 
   backup_file "/etc/clamav/clamd.conf"
@@ -1157,7 +1180,11 @@ main() {
   give_info
 
   # Ask about reboot
-  reboot_now=$(get_yes_no "Reboot now to ensure all changes take effect?")
+  if ! $YES; then
+    reboot_now=$(get_yes_no "Reboot now to ensure all changes take effect?")
+  else
+    reboot_now="no"
+  fi
   if [[ "$reboot_now" == "yes" ]]; then
     show_info "System will reboot in 10 seconds..."
     sleep 10
