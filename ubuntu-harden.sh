@@ -309,13 +309,7 @@ configure_ssh() {
   SSH_PORT=$(get_input "Enter SSH port (default: 1911):" "1911")
 
   # Ask about password authentication
-  password_auth=$(get_yes_no "Allow password authentication? (Recommended: No if you have SSH keys)")
-  if [[ "$password_auth" == "yes" ]]; then
-    password_setting="yes"
-  else
-    password_setting="no"
-  fi
-
+  password_setting=$(get_yes_no "Allow password authentication? (Recommended: No if you have SSH keys)")
   backup_file $SSHD_CONFIG_FILE
 
   sed_ssh_param "PubkeyAuthentication" "yes" $SSHD_CONFIG_FILE
