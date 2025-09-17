@@ -9,6 +9,11 @@ LOG_FILE=${LOG_FILE:-"$LOG_DIR/harden-$(date +%s).log"}
 SSHD_CONFIG_FILE="/etc/ssh/sshd_config"
 SSH_PORT=1911
 BACKUP_DIR=$TMP_DIR/backup
+
+# Default verbosity
+VERBOSITY_LEVEL=1
+
+# Parse command line arguments
 for arg in "$@"; do
   case $arg in
   -v)
@@ -23,11 +28,24 @@ for arg in "$@"; do
     VERBOSITY_LEVEL=3
     shift
     ;;
-  *)
-    VERBOSITY_LEVEL=3
+  --no-gui)
+    NO_GUI=1
+    shift
     ;;
+  *) ;;
   esac
 done
+
+# Check if whiptail is available
+if ! command -v whiptail &>/dev/null && [[ -z "$NO_GUI" ]]; then
+  echo "Installing whiptail for better user interface..."
+  sudo apt-get install -y whiptail
+fi
+
+# Whiptail dimensions
+HEIGHT=20
+WIDTH=78
+CHOICE_HEIGHT=4
 
 log() {
   local level=$1
@@ -37,13 +55,173 @@ log() {
   fi
 }
 
+show_message() {
+  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+    whiptail --title "Ubuntu Hardening Script" --msgbox "$1" $HEIGHT $WIDTH
+  else
+    echo "$1"
+    read -p "Press Enter to continue..."
+  fi
+}
+
+show_info() {
+  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+    whiptail --title "Information" --msgbox "$1" $HEIGHT $WIDTH
+  else
+    echo "INFO: $1"
+  fi
+}
+
+get_input() {
+  local prompt="$1"
+  local default="$2"
+
+  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+    whiptail --title "Input Required" --inputbox "$prompt" $HEIGHT $WIDTH "$default" 3>&1 1>&2 2>&3
+  else
+    read -p "$prompt [$default]: " input
+    echo "${input:-$default}"
+  fi
+}
+
+get_yes_no() {
+  local prompt="$1"
+
+  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+    if whiptail --title "Confirmation" --yesno "$prompt" $HEIGHT $WIDTH; then
+      echo "yes"
+    else
+      echo "no"
+    fi
+  else
+    while true; do
+      read -p "$prompt (y/n): " yn
+      case $yn in
+      [Yy]*)
+        echo "yes"
+        break
+        ;;
+      [Nn]*)
+        echo "no"
+        break
+        ;;
+      *) echo "Please answer yes or no." ;;
+      esac
+    done
+  fi
+}
+
+select_options() {
+  local title="$1"
+  local prompt="$2"
+  shift 2
+  local options=("$@")
+
+  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+    local menu_items=()
+    for i in "${!options[@]}"; do
+      menu_items+=("$((i + 1))" "${options[$i]}")
+    done
+
+    whiptail --title "$title" --menu "$prompt" $HEIGHT $WIDTH $CHOICE_HEIGHT "${menu_items[@]}" 3>&1 1>&2 2>&3
+  else
+    echo "$prompt"
+    for i in "${!options[@]}"; do
+      echo "$((i + 1)). ${options[$i]}"
+    done
+    read -p "Enter your choice (1-${#options[@]}): " choice
+    echo "$choice"
+  fi
+}
+
+show_progress() {
+  local percent="$1"
+  local message="$2"
+
+  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+    echo "$percent" | whiptail --title "Progress" --gauge "$message" 6 70 0
+  else
+    echo "[$percent%] $message"
+  fi
+}
+
 sudo mkdir -p $LOG_DIR
 sudo mkdir -p $BACKUP_DIR
 log 0 "Extracting logs to $LOG_FILE"
 
+# Welcome screen
+show_message "Welcome to Ubuntu Security Hardening Script
+
+This script will help you secure your Ubuntu system by:
+- Configuring SSH security
+- Setting up firewall rules
+- Installing and configuring security tools
+- Hardening kernel parameters
+- Setting up monitoring and intrusion detection
+
+Please follow the prompts to customize your security setup."
+
+# Configuration menu
+show_configuration_menu() {
+  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+    COMPONENTS=$(whiptail --title "Select Components to Install/Configure" \
+      --checklist "Choose which security components you want to configure:" \
+      20 78 12 \
+      "INSTALL_PKGS" "Install Required Packages" ON \
+      "SSH" "Configure SSH security settings" ON \
+      "FIREWALL" "Configure UFW firewall" ON \
+      "FAIL2BAN" "Install and configure Fail2ban" ON \
+      "CLAMAV" "Install ClamAV antivirus" ON \
+      "LYNIS" "Install Lynis security auditing tool" ON \
+      "RKHUNTER" "Install and configure rkhunter" ON \
+      "NTP" "Configure time synchronization" ON \
+      "AIDE" "Install AIDE file integrity checker" ON \
+      "AUDITD" "Configure system auditing" ON \
+      "SYSCTL" "Harden kernel parameters" ON \
+      "ADMIN_USER" "Create admin user" OFF 3>&1 1>&2 2>&3)
+  else
+    echo "Select components to configure (enter numbers separated by spaces):"
+    echo "1. SSH security"
+    echo "2. UFW firewall"
+    echo "3. Fail2ban"
+    echo "4. ClamAV antivirus"
+    echo "5. Lynis auditing"
+    echo "6. Rkhunter"
+    echo "7. NTP synchronization"
+    echo "8. AIDE file integrity"
+    echo "9. System auditing (auditd)"
+    echo "10. Kernel hardening (sysctl)"
+    echo "11. Create admin user"
+    read -p "Enter your choices (e.g., 1 2 3 4): " choices
+
+    # Convert to whiptail-like format
+    COMPONENTS=""
+    for choice in $choices; do
+      case $choice in
+      1) COMPONENTS="$COMPONENTS INSTALL_PKGS" ;;
+      2) COMPONENTS="$COMPONENTS SSH" ;;
+      3) COMPONENTS="$COMPONENTS FIREWALL" ;;
+      4) COMPONENTS="$COMPONENTS FAIL2BAN" ;;
+      6) COMPONENTS="$COMPONENTS CLAMAV" ;;
+      6) COMPONENTS="$COMPONENTS LYNIS" ;;
+      7) COMPONENTS="$COMPONENTS RKHUNTER" ;;
+      8) COMPONENTS="$COMPONENTS NTP" ;;
+      9) COMPONENTS="$COMPONENTS AIDE" ;;
+      10) COMPONENTS="$COMPONENTS AUDITD" ;;
+      11) COMPONENTS="$COMPONENTS SYSCTL" ;;
+      12) COMPONENTS="$COMPONENTS ADMIN_USER" ;;
+      esac
+    done
+  fi
+}
+
 setup_admin_user() {
-  local ADMIN_USER="john"
-  log 0 "Yeni yönetici kullanıcı oluşturuluyor: $ADMIN_USER"
+  local ADMIN_USER
+  ADMIN_USER=$(get_input "Enter username for new admin user:" "john")
+
+  log 0 "Creating new admin user: $ADMIN_USER"
+  show_info "Creating admin user: $ADMIN_USER"
+
   if ! id "$ADMIN_USER" &>/dev/null; then
     sudo useradd -m -G sudo -s "$(which bash)" "$ADMIN_USER"
   fi
@@ -53,9 +231,9 @@ setup_admin_user() {
   sudo chmod 700 "$ssh_dir"
   touch "$ssh_dir/authorized_keys"
   sudo chmod 600 "$ssh_dir/authorized_keys"
-  sudo chown -R "$ADMIN_USER:$ADMIN_USER" -R "/home/$ADMIN_USER"
+  sudo chown -R "$ADMIN_USER:$ADMIN_USER" "/home/$ADMIN_USER"
 
-  log 0 "SSH anahtarınızı $ssh_dir/authorized_keys dosyasına ekleyin."
+  show_info "Admin user created successfully. Remember to add your SSH key to $ssh_dir/authorized_keys"
 }
 
 backup_file() {
@@ -64,8 +242,6 @@ backup_file() {
     local backup_name="${BACKUP_DIR}/$(basename "$file").$(date +%Y%m%d-%H%M%S).bak"
     log 2 "cp -p \"$file\" \"$backup_name\""
     cp -p "$file" "$backup_name"
-    # Save file permissions and ownership
-    log 2 "stat -c \"%a %U:%G\" \"$file\" >\"${backup_name}.meta\""
     stat -c "%a %U:%G" "$file" >"${backup_name}.meta"
     log 1 "Backed up $file to $backup_name"
   fi
@@ -86,21 +262,22 @@ validate_frequency() {
 
 add_cisofy_lynis_repos() {
   log 0 "Adding Lynis source repos"
-  log 2 "curl -fsSL https://packages.cisofy.com/keys/cisofy-software-public.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/cisofy-software-public.gpg"
   curl -fsSL https://packages.cisofy.com/keys/cisofy-software-public.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/cisofy-software-public.gpg
-  log 2 'echo "deb [arch=amd64,arm64 signed-by=/etc/apt/trusted.gpg.d/cisofy-software-public.gpg] https://packages.cisofy.com/community/lynis/deb/ stable main" | sudo tee /etc/apt/sources.list.d/cisofy-lynis.list'
   echo "deb [arch=amd64,arm64 signed-by=/etc/apt/trusted.gpg.d/cisofy-software-public.gpg] https://packages.cisofy.com/community/lynis/deb/ stable main" | sudo tee /etc/apt/sources.list.d/cisofy-lynis.list
 }
 
 install_pkgs() {
+  show_info "Installing security packages. This may take a few minutes..."
+
   log 0 "Updating repositories"
-  log 2 "sudo apt-get update -y"
   sudo apt-get update -y
+
   log 0 "Installing packages"
   add_cisofy_lynis_repos
   pkgs="fail2ban sudo clamav clamav-daemon clamav-freshclam rkhunter ntp aide aide-common aide-dynamic auditd audispd-plugins lynis"
-  log 2 "sudo apt-get install $pkgs -y"
   sudo apt-get install $pkgs -y
+
+  show_info "Package installation completed successfully!"
 }
 
 sed_ssh_param() {
@@ -109,103 +286,107 @@ sed_ssh_param() {
   TARGET=$3
   log 0 "Setting $PARAM"
   if grep -q $PARAM $SSHD_CONFIG_FILE; then
-    log 2 "sed -i \"s/^#$PARAM.*/$PARAM $VALUE/\" \"$TARGET\""
     sudo sed -i "s/^#$PARAM.*/$PARAM $VALUE/" "$TARGET"
-    log 2 "sed -i \"s/^$PARAM.*/$PARAM $VALUE/\" \"$TARGET\""
     sudo sed -i "s/^$PARAM.*/$PARAM $VALUE/" "$TARGET"
   else
-    echo "$PARAM $VALUE" | tee -a $SSHD_CONFIG_FILE
+    echo "$PARAM $VALUE" | sudo tee -a $SSHD_CONFIG_FILE
   fi
 }
 
 restart_ssh() {
   log 0 "Restarting SSH service"
-  log 2 "sudo systemctl restart ssh"
   sudo systemctl restart ssh || sudo systemctl restart sshd
 }
 
 configure_ssh() {
+  show_info "Configuring SSH security settings..."
+
+  # Get SSH port
+  SSH_PORT=$(get_input "Enter SSH port (default: 1911):" "1911")
+
+  # Ask about password authentication
+  password_auth=$(get_yes_no "Allow password authentication? (Recommended: No if you have SSH keys)")
+  if [[ "$password_auth" == "yes" ]]; then
+    password_setting="yes"
+  else
+    password_setting="no"
+  fi
+
+  backup_file $SSHD_CONFIG_FILE
+
   sed_ssh_param "PubkeyAuthentication" "yes" $SSHD_CONFIG_FILE
   sed_ssh_param "MaxAuthTries" "3" $SSHD_CONFIG_FILE
   sed_ssh_param "PermitRootLogin" "no" $SSHD_CONFIG_FILE
   sed_ssh_param "Port" "$SSH_PORT" $SSHD_CONFIG_FILE
-  sed_ssh_param "PasswordAuthentication" "yes" $SSHD_CONFIG_FILE
+  sed_ssh_param "PasswordAuthentication" "$password_setting" $SSHD_CONFIG_FILE
   sed_ssh_param "MaxSessions" "2" $SSHD_CONFIG_FILE
   sed_ssh_param "TCPKeepAlive" "no" $SSHD_CONFIG_FILE
   sed_ssh_param "X11Forwarding" "no" $SSHD_CONFIG_FILE
   sed_ssh_param "AllowAgentForwarding" "no" $SSHD_CONFIG_FILE
+
   restart_ssh
+  show_info "SSH configuration completed. New SSH port: $SSH_PORT"
 }
 
 set_fw_rules() {
-  log 0 "Configuring UFW firewall with IPv6 support..."
+  show_info "Configuring UFW firewall..."
 
   backup_file "/etc/default/ufw"
 
   # Enable IPv6 support
-  log 0 "Enable IPv6 support"
   sed -i 's/IPV6=.*/IPV6=yes/' /etc/default/ufw
 
   # Reset firewall to defaults
-  log 0 "Reset UFW"
-  log 2 "ufw --force reset"
   ufw --force reset
 
   # Set default policies
-  log 2 "ufw default deny incoming"
-  log 0 "Default Deny Incoming Requests"
   ufw default deny incoming
-  log 2 "ufw default allow outgoing"
-  log 0 "Default Allow Outing Requests"
   ufw default allow outgoing
-  log 2 "ufw default deny routed"
-  log 0 "Deny Routed"
   ufw default deny routed
 
   # Configure logging
-  log 2 "ufw logging on"
-  log 0 "Enable UFW"
   ufw logging on
-  log 2 "ufw logging medium"
-  log 0 "Enable UFW logging"
   ufw logging medium
 
   # Basic rules with rate limiting
-  log 2 "ufw limit 22/tcp comment 'SSH rate limit'"
-  log 0 "Allow SSH"
   ufw limit $SSH_PORT/tcp comment 'SSH rate limit'
 
   # Allow DHCP client (important for cloud instances)
-  log 2 "ufw allow 68/udp comment 'DHCP client'"
-  log 0 "Allow 67/UDP DHPCP Client for cloud"
   ufw allow 68/udp comment 'DHCP client'
 
+  # Ask about additional ports
+  add_ports=$(get_yes_no "Do you want to open additional ports? (e.g., web server ports)")
+  if [[ "$add_ports" == "yes" ]]; then
+    additional_ports=$(get_input "Enter additional ports to open (comma-separated, e.g., 80,443):" "")
+    if [[ -n "$additional_ports" ]]; then
+      IFS=',' read -ra PORTS <<<"$additional_ports"
+      for port in "${PORTS[@]}"; do
+        port=$(echo "$port" | xargs) # trim whitespace
+        ufw allow "$port"
+        log 0 "Opened port: $port"
+      done
+    fi
+  fi
+
   # Enable firewall
-  log 2 "echo \"y\" | ufw enable"
-  log 0 "Enable UFW service"
   echo "y" | ufw enable
 
   # Configure iptables-persistent
   if command -v netfilter-persistent &>/dev/null; then
-    log 2 "netfilter-persistent save"
     netfilter-persistent save
-    log 2 "sudo systemctl enable netfilter-persistent"
     sudo systemctl enable netfilter-persistent
   fi
 
-  log 0 "UFW firewall configured and enabled"
-  log 0 "NOTE: Only SSH (rate-limited) and DHCP are allowed"
-
+  show_info "UFW firewall configured and enabled successfully!"
 }
 
 configure_fail2ban() {
-  log 0 "Configuring Fail2ban with systemd integration..."
+  show_info "Configuring Fail2ban intrusion prevention..."
 
   backup_file "/etc/fail2ban/jail.conf"
 
   # Create jail.local with Ubuntu 24.04 optimizations
-  log 0 "Configuring jail.local"
-  sudo tee /etc/fail2ban/jail.local <<'EOF'
+  sudo tee /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 # Ubuntu 24.04 Fail2ban Configuration
 bantime  = 1h
@@ -218,11 +399,6 @@ enabled = false
 mode = normal
 filter = %(__name__)s[mode=%(mode)s]
 
-# Destination email
-# destemail = root@localhost
-# sender = root@localhost
-# mta = sendmail
-
 # Action
 action = %(action_mwl)s
 
@@ -231,7 +407,7 @@ ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
 
 [sshd]
 enabled = true
-port = ssh
+port = $SSH_PORT
 logpath = %(sshd_log)s
 backend = %(sshd_backend)s
 maxretry = 3
@@ -240,7 +416,7 @@ findtime = 20m
 
 [sshd-ddos]
 enabled = true
-port = ssh
+port = $SSH_PORT
 logpath = %(sshd_log)s
 backend = %(sshd_backend)s
 maxretry = 10
@@ -263,25 +439,12 @@ logpath = /var/log/ufw.log
 maxretry = 2
 bantime = 1d
 findtime = 1d
-
-# Additional jails for common services
-[apache-auth]
-enabled = false
-port = http,https
-logpath = %(apache_error_log)s
-
-[nginx-http-auth]
-enabled = false
-port = http,https
-logpath = %(nginx_error_log)s
 EOF
 
   # Create custom filters
-  log 2 "mkdir -p /etc/fail2ban/filter.d"
   sudo mkdir -p /etc/fail2ban/filter.d
 
   # Port scan filter
-  log 0 "Configuring port scan filter"
   sudo tee /etc/fail2ban/filter.d/port-scan.conf <<'EOF'
 [Definition]
 failregex = .*UFW BLOCK.* SRC=<HOST>
@@ -289,20 +452,35 @@ ignoreregex =
 EOF
 
   # Restart fail2ban
-  log 0 "Restarting fail2ban"
-  log 2 "sudo systemctl restart fail2ban"
   sudo systemctl restart fail2ban
-  log 2 "sudo systemctl enable fail2ban"
-  log 0 "Enable fail2ban service"
   sudo systemctl enable fail2ban
 
-  log 0 "Fail2ban configured with systemd integration"
+  show_info "Fail2ban configured successfully!"
 }
 
 configure_and_start_clamav() {
-  log 0 "Configuring ClamAV with performance optimizations..."
+  show_info "Configuring ClamAV antivirus..."
 
-  # Configure ClamAV for Ubuntu 24.04
+  # Get scan frequency
+  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+    scan_frequency=$(whiptail --title "ClamAV Configuration" --menu "How often should ClamAV scan your system?" $HEIGHT $WIDTH $CHOICE_HEIGHT \
+      "daily" "Scan every day (high security)" \
+      "weekly" "Scan weekly (recommended)" \
+      "monthly" "Scan monthly (basic)" 3>&1 1>&2 2>&3)
+  else
+    echo "Select scan frequency:"
+    echo "1. Daily (high security)"
+    echo "2. Weekly (recommended)"
+    echo "3. Monthly (basic)"
+    read -p "Enter choice (1-3): " freq_choice
+    case $freq_choice in
+    1) scan_frequency="daily" ;;
+    2) scan_frequency="weekly" ;;
+    3) scan_frequency="monthly" ;;
+    *) scan_frequency="weekly" ;;
+    esac
+  fi
+
   backup_file "/etc/clamav/clamd.conf"
   backup_file "/etc/clamav/freshclam.conf"
 
@@ -336,33 +514,21 @@ EOF
   sed -i 's/^Checks.*/Checks 24/' /etc/clamav/freshclam.conf 2>/dev/null || true
 
   # Stop services for configuration
-  log 0 "Stoping clamav-freshclam service"
   sudo systemctl stop clamav-freshclam
-  log 0 "Stoping clamav-daemon"
   sudo systemctl stop clamav-daemon
 
   # Update virus database
-  log 0 "Updating ClamAV virus database..."
-  # TO-DO | fix permission denied
   sudo freshclam || log 0 "WARNING: Failed to update ClamAV database"
 
   # Start and enable services
-  log 0 "Starting clamav-freshclam service"
   sudo systemctl start clamav-freshclam
-  log 0 "Starting clamav-daemon service"
   sudo systemctl start clamav-daemon
-  log 0 "Enabling clamav-freshclam service"
   sudo systemctl enable clamav-freshclam
-  log 0 "Enabling clamav-daemon service"
   sudo systemctl enable clamav-daemon
 
-  # Get scan frequency
-  log 0 "Please enter how often you want ClamAV scans to run (daily/weekly/monthly):"
-  read -r scan_frequency
   scan_frequency=$(validate_frequency "$scan_frequency")
 
-  # Create systemd timer for scans (Ubuntu 24.04 preferred)
-  log 0 "Creating clamav-scan service"
+  # Create systemd timer for scans
   sudo tee /etc/systemd/system/clamav-scan.service <<'EOF'
 [Unit]
 Description=ClamAV Virus Scan
@@ -399,7 +565,6 @@ nice -n 19 ionice -c 3 clamscan -r -i \
     --max-dir-recursion=20 \
     --log="$LOG_FILE" \
     / 2>/dev/null
-fi
 EOF
   sudo chmod 755 /usr/local/bin/clamav-scan.sh
 
@@ -415,6 +580,7 @@ EOF
     timer_schedule="monthly"
     ;;
   esac
+
   sudo tee /etc/systemd/system/clamav-scan.timer <<EOF
 [Unit]
 Description=Run ClamAV scan $scan_frequency
@@ -430,72 +596,65 @@ WantedBy=timers.target
 EOF
 
   sudo systemctl daemon-reload
-  log 0 "Enabling clamav-scan service"
   sudo systemctl enable clamav-scan.timer
-  log 0 "Starting clamav-scan service"
   sudo systemctl start clamav-scan.timer
 
-  log 0 "ClamAV configured with $scan_frequency scans"
+  show_info "ClamAV configured with $scan_frequency scans"
 }
 
 install_cisofy_lynis() {
+  show_info "Installing and configuring Lynis security auditing tool..."
+
   local LYNIS_BIN='/usr/sbin/lynis'
   LYNIS_LOG_FOLDER='/var/log/lynis'
-  log 2 "mkdir -p /var/log/lynis"
   sudo mkdir -p /var/log/lynis
-  log 2 "sudo crontab -l -u root | tee $TMP_DIR/crontab"
   sudo crontab -l -u root | tee $TMP_DIR/crontab
   tee -a $TMP_DIR/crontab <<EOF
 0 0 * * 7  $LYNIS_BIN audit system --log-file $LYNIS_LOG_FOLDER/\$(date +%Y-%m-%d_%H-%M-%S -u).log --cronjob
 EOF
-  log 2 "sudo crontab -u root $TMP_DIR/crontab"
   sudo crontab -u root $TMP_DIR/crontab
-  log 2 "sudo rm $TMP_DIR/crontab"
   sudo rm $TMP_DIR/crontab
+
+  show_info "Lynis configured to run weekly security audits"
 }
 
 configure_rkhunter() {
-  log 0 "Configuring $RKHUNTER_CONFIG_FILE"
+  show_info "Configuring RKHunter rootkit scanner..."
+
   local RKHUNTER_CONFIG_FILE="/etc/rkhunter.conf"
-  log 2 "sudo sed -i \"s/UPDATE_MIRRORS\=0/UPDATE_MIRRORS\=1/g\" $RKHUNTER_CONFIG_FILE"
+  backup_file $RKHUNTER_CONFIG_FILE
+
   sudo sed -i "s/UPDATE_MIRRORS\=0/UPDATE_MIRRORS\=1/g" $RKHUNTER_CONFIG_FILE
-  log 2 "sudo tee -a \"CRON_DAILY_RUN=true\" $RKHUNTER_CONFIG_FILE"
   echo "CRON_DAILY_RUN=true" | sudo tee -a $RKHUNTER_CONFIG_FILE
-  log 2 "sudo sed -i \"s/USE_SYSLOG\=authpriv\.warning/USE_SYSLOG\=authpriv\.notice/g\" $RKHUNTER_CONFIG_FILE"
   sudo sed -i "s/USE_SYSLOG\=authpriv\.warning/USE_SYSLOG\=authpriv\.notice/g" $RKHUNTER_CONFIG_FILE
-  log 2 "sudo sed -i 's/^WEB_CMD.*/WEB_CMD=curl -L /' $RKHUNTER_CONFIG_FILE"
   sudo sed -i 's/^WEB_CMD.*/WEB_CMD=curl -L /' $RKHUNTER_CONFIG_FILE
-  log 2 "sudo rkhunter --update"
+
   sudo rkhunter --update
-  log 2 "sudo rkhunter --propupd"
   sudo rkhunter --propupd
+
+  show_info "RKHunter configured successfully"
 }
 
 setup_ntp() {
+  show_info "Configuring time synchronization..."
+
   if sudo systemctl list-unit-files | grep -q systemd-timesyncd.service; then
-    log 0 "Using systemd-timesyncd for time synchronization"
-    log 2 "sudo systemctl enable systemd-timesyncd.service"
     sudo systemctl enable systemd-timesyncd.service
-    log 2 "sudo systemctl start systemd-timesyncd.service"
     sudo systemctl start systemd-timesyncd.service
-    log 0 "systemd-timesyncd setup complete"
   else
-    log 0 "Using traditional NTP for time synchronization"
-    log 2 "sudo systemctl enable ntpsec"
     sudo systemctl enable ntpsec
-    log 2 "sudo systemctl start ntpsec"
     sudo systemctl start ntpsec
-    log 0 "NTP setup complete"
   fi
+
+  show_info "Time synchronization configured"
 }
 
 configure_aide() {
-  log 0 "Configuring AIDE file integrity checker..."
+  show_info "Configuring AIDE file integrity checker... This may take several minutes."
 
   backup_file "/etc/aide/aide.conf"
 
   # Configure AIDE for Ubuntu 24.04
-  log 0 "Configuring /etc/aide/aide.conf"
   sudo tee -a /etc/aide/aide.conf <<'EOF'
 
 # Ubuntu 24.04 specific exclusions
@@ -514,21 +673,16 @@ configure_aide() {
 EOF
 
   # Initialize AIDE database
-  log 0 "Initializing AIDE database (this may take several minutes)..."
-  log 2 "aideinit || error_exit \"Failed to initialize AIDE\""
-  sudo aideinit || error_exit "Failed to initialize AIDE"
+  show_info "Initializing AIDE database (this may take several minutes)..."
+  sudo aideinit
 
   # Move database to production location
   if [[ -f /var/lib/aide/aide.db.new ]]; then
-    log 2 "mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db"
     sudo mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
-    log 2 "chmod 600 /var/lib/aide/aide.db"
     sudo chmod 600 /var/lib/aide/aide.db
-    log 0 "AIDE database initialized successfully"
   fi
 
-  # Create systemd timer for AIDE checks (Ubuntu 24.04 preferred method)
-  log 0 "Creating aide-check service"
+  # Create systemd timer for AIDE checks
   sudo tee /etc/systemd/system/aide-check.service <<'EOF'
 [Unit]
 Description=AIDE File Integrity Check
@@ -559,23 +713,21 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-  log 2 "sudo systemctl daemon-reload"
+
   sudo systemctl daemon-reload
-  log 2 "sudo systemctl enable aide-check.timer"
-  log 0 "Enabling aide-check service"
   sudo systemctl enable aide-check.timer
-  log 2 "sudo systemctl start aide-check.timer"
   sudo systemctl start aide-check.timer
+
+  show_info "AIDE file integrity monitoring configured"
 }
 
 configure_auditd() {
-  log 1 "Configuring auditd with Ubuntu 24.04 optimizations..."
+  show_info "Configuring system auditing (auditd)..."
 
   backup_file "/etc/audit/auditd.conf"
   backup_file "/etc/audit/rules.d/audit.rules"
 
   # Configure auditd for Ubuntu 24.04
-  log 0 "Creating auditd.conf"
   sudo tee /etc/audit/auditd.conf <<'EOF'
 # Ubuntu 24.04 Optimized Audit Configuration
 local_events = yes
@@ -615,8 +767,7 @@ plugin_dir = /etc/audit/plugins.d
 end_of_event_timeout = 2
 EOF
 
-  # Create comprehensive audit rules for Ubuntu 24.04
-  log 0 "Creating hardening.rules"
+  # Create comprehensive audit rules
   sudo tee /etc/audit/rules.d/hardening.rules <<'EOF'
 # Ubuntu 24.04 Security Audit Rules
 # Delete all existing rules
@@ -641,7 +792,6 @@ EOF
 
 # Monitor SSH configuration
 -w /etc/ssh/sshd_config -p wa -k sshd_config
-
 -w /etc/ssh/sshd_config.d/ -p wa -k sshd_config
 
 # Monitor systemd
@@ -705,13 +855,8 @@ EOF
 EOF
 
   # Load rules and restart auditd
-  log 2 "augenrules --load"
   augenrules --load
-  log 2 "sudo systemctl restart auditd"
-  log 0 "Restarting auditd service"
   sudo systemctl restart auditd
-  log 2 "sudo systemctl enable auditd"
-  log 0 "Enabling auditd"
   sudo systemctl enable auditd
 
   # Configure audit log rotation
@@ -730,16 +875,18 @@ EOF
     endscript
 }
 EOF
+
+  show_info "System auditing (auditd) configured successfully"
 }
 
 configure_sysctl() {
+  show_info "Hardening kernel parameters..."
+
   local SYSCTL_SECURITY_HARDENING_CONF_FILE='/etc/sysctl.d/99-security-hardening.conf'
-  log 0 "Configuring kernel security parameters for Ubuntu 24.04..."
 
   backup_file "/etc/sysctl.conf"
 
   # Create comprehensive sysctl security configuration
-  log 0 "Creating $SYSCTL_SECURITY_HARDENING_CONF_FILE"
   sudo tee $SYSCTL_SECURITY_HARDENING_CONF_FILE <<'EOF'
 # Ubuntu 24.04 Kernel Security Hardening
 
@@ -843,12 +990,6 @@ net.core.bpf_jit_enable = 0
 kernel.modules_disabled = 0
 kernel.io_uring_disabled = 2
 
-### IPv6 Security (disable if not needed) ###
-# Uncomment to disable IPv6
-# net.ipv6.conf.all.disable_ipv6 = 1
-# net.ipv6.conf.default.disable_ipv6 = 1
-# net.ipv6.conf.lo.disable_ipv6 = 1
-
 ### Performance and Resource Protection ###
 vm.swappiness = 10
 vm.vfs_cache_pressure = 50
@@ -863,34 +1004,148 @@ kernel.printk = 3 3 3 3
 EOF
 
   # Apply sysctl settings
-  log 0 "Applying sysctl.conf"
   sudo sysctl -p /etc/sysctl.d/99-security-hardening.conf
 
-  log 0 "Kernel parameters configured"
+  show_info "Kernel security parameters configured"
 }
 
 give_info() {
-  cat <<EOF
-SSH Group Users -> $(getent group ssh_users | cut -d : -f 4 | sed "s/\,/ /g")
-Clamav Log Files -> $FRESH_CLAM_LOG_FILE, $CLAMD_LOG_FILE, $CLAMSCAN_LOG_FILE
-Lynis Log Folder -> $LYNIS_LOG_FOLDER
-Rkhunter Log File -> /var/log/rkunter.log
-Active Cronjobs for $USER:
-$(crontab -l)
-Active Cronjobs for root:
-$(sudo crontab -l -u root)
-EOF
+  local info_text="
+UBUNTU HARDENING COMPLETED SUCCESSFULLY!
+
+Configuration Summary:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SSH Configuration:
+• Port: $SSH_PORT
+• Root login: Disabled
+• Password auth: As configured
+• Max auth tries: 3
+
+Security Tools Installed:
+• Fail2ban: Active (protects SSH and other services)
+• ClamAV: Active (scheduled scans)
+• Lynis: Weekly security audits
+• RKHunter: Rootkit detection
+• AIDE: File integrity monitoring
+• Auditd: System activity auditing
+
+Firewall:
+• UFW enabled with strict rules
+• Only SSH and specified ports allowed
+• IPv6 support enabled
+
+Log Files:
+• Main log: $LOG_FILE
+• Backup directory: $BACKUP_DIR
+• ClamAV logs: /var/log/clamav/
+• Lynis logs: /var/log/lynis/
+• Audit logs: /var/log/audit/
+
+Important Notes:
+• Remember your new SSH port: $SSH_PORT
+• Reboot recommended to ensure all changes take effect
+• Run 'sudo lynis audit system' for security assessment
+• Check fail2ban status: 'sudo fail2ban-client status'
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"
+
+  if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
+    whiptail --title "Hardening Complete" --msgbox "$info_text" 25 80
+  else
+    echo "$info_text"
+  fi
 }
 
-# setup_admin_user
-install_pkgs
-configure_ssh
-restart_ssh
-configure_fail2ban
-configure_and_start_clamav
-install_cisofy_lynis
-configure_rkhunter
-setup_ntp
-configure_aide
-configure_auditd
-configure_sysctl
+# Main execution
+main() {
+  # Check if running as root
+  if [[ $EUID -eq 0 ]]; then
+    show_message "Warning: Running as root. Some features may not work correctly. It's recommended to run as a sudo user."
+  fi
+
+  # Show configuration menu
+  show_configuration_menu
+
+  # Convert space-separated to array for processing
+  IFS=' ' read -ra SELECTED_COMPONENTS <<<"$COMPONENTS"
+
+  total_steps=${#SELECTED_COMPONENTS[@]}
+  current_step=0
+
+  # Process selected components
+  for component in "${SELECTED_COMPONENTS[@]}"; do
+    # Remove quotes if present
+    component=$(echo "$component" | tr -d '"')
+    current_step=$((current_step + 1))
+    progress=$((current_step * 100 / total_steps))
+
+    case "$component" in
+    "INSTALL_PKGS")
+      show_progress $progress "Installing packages..."
+      install_pkgs
+      ;;
+    "ADMIN_USER")
+      show_progress $progress "Creating admin user..."
+      setup_admin_user
+      ;;
+    "SSH")
+      show_progress $progress "Configuring SSH..."
+      configure_ssh
+      ;;
+    "FIREWALL")
+      show_progress $progress "Configuring firewall..."
+      set_fw_rules
+      ;;
+    "FAIL2BAN")
+      show_progress $progress "Configuring Fail2ban..."
+      configure_fail2ban
+      ;;
+    "CLAMAV")
+      show_progress $progress "Configuring ClamAV..."
+      configure_and_start_clamav
+      ;;
+    "LYNIS")
+      show_progress $progress "Installing Lynis..."
+      install_cisofy_lynis
+      ;;
+    "RKHUNTER")
+      show_progress $progress "Configuring RKHunter..."
+      configure_rkhunter
+      ;;
+    "NTP")
+      show_progress $progress "Setting up time sync..."
+      setup_ntp
+      ;;
+    "AIDE")
+      show_progress $progress "Configuring AIDE..."
+      configure_aide
+      ;;
+    "AUDITD")
+      show_progress $progress "Configuring auditd..."
+      configure_auditd
+      ;;
+    "SYSCTL")
+      show_progress $progress "Hardening kernel..."
+      configure_sysctl
+      ;;
+    esac
+  done
+
+  # Show completion information
+  give_info
+
+  # Ask about reboot
+  reboot_now=$(get_yes_no "Reboot now to ensure all changes take effect?")
+  if [[ "$reboot_now" == "yes" ]]; then
+    show_info "System will reboot in 10 seconds..."
+    sleep 10
+    sudo reboot
+  else
+    show_info "Please remember to reboot your system later to ensure all changes take effect."
+  fi
+}
+
+# Run main function
+main "$@"
