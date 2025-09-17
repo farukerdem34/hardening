@@ -88,7 +88,11 @@ get_yes_no() {
   local prompt="$1"
 
   if [[ -z "$NO_GUI" ]] && command -v whiptail &>/dev/null; then
-    if whiptail --title "Confirmation" --yesno "$prompt" $HEIGHT $WIDTH; then
+    answer=$(
+      whiptail --yesno "$prompt" $HEIGHT $WIDTH 3>&1 1>&2 2>&3
+      echo $?
+    )
+    if [[ $answer == 0 ]]; then
       echo "yes"
     else
       echo "no"
