@@ -149,6 +149,16 @@ show_progress() {
   fi
 }
 
+change_passwd() {
+  USER=$1
+  PASSWD=$2
+  if command -v chpasswd &>/dev/null; then
+    echo "$USER:$PASSWD" | chpasswd
+  else
+    printf "$PASSWD\n$PASSWD\n" | passwd $USER
+  fi
+}
+
 sudo mkdir -p $LOG_DIR
 sudo mkdir -p $BACKUP_DIR
 log 0 "Extracting logs to $LOG_FILE"
@@ -222,7 +232,6 @@ show_configuration_menu() {
 setup_admin_user() {
   local ADMIN_USER
   ADMIN_USER=$(get_input "Enter username for new admin user:" "john")
-
   log 0 "Creating new admin user: $ADMIN_USER"
   show_info "Creating admin user: $ADMIN_USER"
 
@@ -236,8 +245,21 @@ setup_admin_user() {
   touch "$ssh_dir/authorized_keys"
   sudo chmod 600 "$ssh_dir/authorized_keys"
   sudo chown -R "$ADMIN_USER:$ADMIN_USER" "/home/$ADMIN_USER"
+  add_pub_key=$(get_yes_no "Do you want to add public key for new admin user?")
+  if [[ "$add_pub_key" == "yes" ]]; then
+    local PUBKEY=$(get_input "Enter public SSH key for new admin user:" "")
+    echo $PUBKEY | tee -a $ssh_dir/authorized_keys
+  else
+    show_info "Admin user created successfully. Remember to add your SSH key to $ssh_dir/authorized_keys"
+  fi
 
-  show_info "Admin user created successfully. Remember to add your SSH key to $ssh_dir/authorized_keys"
+  change_passwd_now=$(get_yes_no "Do you want to change password for $ADMIN_USER")
+  if [[ "$change_passwd_now" == "yes" ]]; then
+    local PASSWD=$(get_input "Password:" "")
+    change_passwd $ADMIN_USER $PASSWD
+  else
+    show_info "Do not forget to change password of $ADMIN_USER, otherwise you won't acces sudo permissions anymore!"
+  fi
 }
 
 backup_file() {
